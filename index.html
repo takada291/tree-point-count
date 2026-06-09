@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KMLメッシュ集計ツール v2</title>
+    <title>KMLメッシュ集計ツール v3</title>
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -42,7 +42,6 @@
             width: 100%;
         }
         
-        /* UIボタンのスタイル */
         button {
             padding: 6px 12px;
             font-size: 13px;
@@ -56,31 +55,31 @@
         }
         button:hover { background-color: #0056b3; }
         
-        #btnDownload {
-            background-color: #28a745;
-        }
+        #btnDownload { background-color: #28a745; }
         #btnDownload:hover { background-color: #218838; }
 
-        /* メッシュ上の数字のスタイル（少し小さく調整） */
+        /* 新しい数字ラベルのスタイル（背景なし、黒縁取りの黄色文字） */
         .mesh-label {
-            background: none;
+            background: transparent;
             border: none;
         }
-        .mesh-label div {
-            background-color: rgba(255, 255, 255, 0.85);
-            border: 2px solid #e74c3c;
-            color: #c0392b;
-            font-weight: bold;
-            font-size: 12px; /* 14pxから縮小 */
-            border-radius: 50%;
-            width: 22px;  /* 28pxから縮小 */
-            height: 22px; /* 28pxから縮小 */
+        .mesh-label-content {
+            color: #FFD700; /* 明るい黄色 */
+            font-weight: 900; /* 極太字 */
+            font-family: "Arial Black", Arial, sans-serif;
+            /* 地形図・オルソ両方で目立つように黒い縁取りと影をつける */
+            text-shadow:
+                -1px -1px 0 #000,
+                 1px -1px 0 #000,
+                -1px  1px 0 #000,
+                 1px  1px 0 #000,
+                 2px  2px 4px rgba(0,0,0,0.8);
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 1px 1px 3px rgba(0,0,0,0.3);
-            margin-left: -11px; /* widthの半分 */
-            margin-top: -11px;  /* heightの半分 */
+            width: 100%;
+            height: 100%;
+            white-space: nowrap;
         }
     </style>
 </head>
@@ -93,10 +92,15 @@
         </div>
         <div class="control-group">
             <label for="meshSize" style="font-weight: bold; font-size: 13px;">メッシュ(m):</label>
-            <input type="number" id="meshSize" value="20" min="5" max="100" step="5" style="width: 50px; padding: 3px;">
-            <button onclick="processKML()">再計算</button>
+            <input type="number" id="meshSize" value="20" min="5" max="100" step="5" style="width: 50px; padding: 3px;" onchange="if(loadedPoints.length>0) processKML()">
         </div>
         <div class="control-group">
+            <label for="fontSize" style="font-weight: bold; font-size: 13px;">文字(px):</label>
+            <input type="number" id="fontSize" value="16" min="8" max="48" step="2" style="width: 45px; padding: 3px;" onchange="if(loadedPoints.length>0) processKML()">
+            
+            <button onclick="processKML()">再計算</button>
+        </div>
+        <div class="control-group" style="margin-left: 10px;">
             <button id="btnDownload" onclick="downloadMapImageWithExif()">地図切出</button>
         </div>
         <div id="status" style="font-size: 13px; color: #555; margin-left: auto;">KMLファイルを選択してください。</div>
@@ -105,31 +109,22 @@
     <div id="map"></div>
 
     <script>
-        // ==========================================
-        // 1. 地図とレイヤーの初期化
-        // ==========================================
         const map = L.map('map').setView([36.2048, 138.2529], 5);
         L.control.scale({ imperial: false, metric: true, position: 'bottomleft' }).addTo(map);
         
         const opt = { attribution: "<a href='https://maps.gsi.go.jp/development/ichiran.html' target='_blank'>地理院タイル</a>", maxZoom: 18 };
 
-        // 背景地図の定義
         const std = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', opt);
         const photo = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', opt);
 
-        // デフォルトは標準地図を表示
         std.addTo(map);
 
-        // レイヤー切り替えコントロールを右上に配置
         const baseMaps = {
             "標準地図 (地形図)": std,
             "最新空中写真 (オルソ)": photo
         };
         L.control.layers(baseMaps, null, { collapsed: false }).addTo(map);
 
-        // ==========================================
-        // 2. 地図切出（画像エクスポート）機能
-        // ==========================================
         const snapshotOptions = {
             hideElementsWithSelectors: [
                 ".leaflet-control-container",
@@ -146,7 +141,6 @@
             const north = bounds.getNorth().toFixed(6);
             const east = bounds.getEast().toFixed(6);
             
-            // 現在表示している背景地図の種類でファイル名を変更
             let activeLayerName = "map";
             map.eachLayer(function(layer){
                 if(layer === photo) activeLayerName = "ortho";
@@ -159,7 +153,6 @@
 
             screenshoter.takeScreen('image')
                 .then(jpegDataUrl => {
-                    // EXIFデータ（表示範囲座標）の生成と埋め込み
                     const coordsString = `${south},${west},${north},${east}`;
                     const zeroth = {};
                     zeroth[piexif.ImageIFD.ImageDescription] = coordsString;
@@ -168,7 +161,6 @@
                     const exifBytes = piexif.dump(exifObj);
                     const newDataUrl = piexif.insert(exifBytes, jpegDataUrl);
 
-                    // ダウンロード処理
                     const link = document.createElement('a');
                     link.download = filename;
                     link.href = newDataUrl;
@@ -182,9 +174,6 @@
                 });
         }
 
-        // ==========================================
-        // 3. KML解析とメッシュ生成機能
-        // ==========================================
         let currentGeoJsonLayer = null;
         let loadedPoints = [];
 
@@ -236,11 +225,11 @@
             }
 
             const meshSizeMeters = parseFloat(document.getElementById('meshSize').value);
+            const fontSizeVal = document.getElementById('fontSize').value;
             const cellSizeKm = meshSizeMeters / 1000;
 
             const pts = turf.featureCollection(loadedPoints);
             const bbox = turf.bbox(pts);
-            // 処理を安定させるため、外枠を少しだけ拡張
             const expandedBbox = [bbox[0]-0.0001, bbox[1]-0.0001, bbox[2]+0.0001, bbox[3]+0.0001];
             const grid = turf.squareGrid(expandedBbox, cellSizeKm, {units: 'kilometers'});
 
@@ -271,10 +260,9 @@
                 style: function (feature) {
                     if (!feature.properties.isLabel) {
                         return {
-                            color: "#e74c3c",
-                            weight: 1.5,
-                            fillColor: "#f39c12",
-                            fillOpacity: 0.15
+                            color: "#e74c3c", // メッシュ枠線の色（赤）
+                            weight: 1.5,      // メッシュ枠線の太さ
+                            fill: false       // 塗りつぶしを完全に透明化
                         };
                     }
                 },
@@ -283,8 +271,10 @@
                         return L.marker(latlng, {
                             icon: L.divIcon({
                                 className: 'mesh-label',
-                                html: `<div>${feature.properties.count}</div>`,
-                                iconSize: [22, 22] // アイコンサイズも同期
+                                // CSSのクラスを適用し、インラインでフォントサイズを指定
+                                html: `<div class="mesh-label-content" style="font-size: ${fontSizeVal}px;">${feature.properties.count}</div>`,
+                                iconSize: [60, 60], // 十分な広さのコンテナを確保
+                                iconAnchor: [30, 30] // コンテナの中心を座標のど真ん中に合わせる
                             }),
                             interactive: false
                         });
@@ -292,7 +282,11 @@
                 }
             }).addTo(map);
 
-            map.fitBounds(currentGeoJsonLayer.getBounds(), { padding: [20, 20] });
+            // 初回描画時のみズーム（再計算時は現在のズームを維持する）
+            if (validMeshCount > 0 && document.getElementById('status').innerText.includes("KMLファイル")) {
+                map.fitBounds(currentGeoJsonLayer.getBounds(), { padding: [20, 20] });
+            }
+            
             document.getElementById('status').innerText = `完了: ${loadedPoints.length}点 / 有効メッシュ ${validMeshCount}マス`;
         }
     </script>
