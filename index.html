@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KMLメッシュ集計ツール v2</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+
+    <script src="https://unpkg.com/leaflet-simple-map-screenshoter"></script>
+    <script src="https://unpkg.com/piexifjs@1.0.6/piexif.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        #controls {
+            padding: 10px 15px;
+            background-color: #f0f0f0;
+            border-bottom: 1px solid #ccc;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            z-index: 1000;
+            flex-wrap: wrap;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        #map {
+            flex-grow: 1;
+            width: 100%;
+        }
+        
+        /* UIボタンのスタイル */
+        button {
+            padding: 6px 12px;
+            font-size: 13px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+            border-radius: 4px;
+            font-weight: bold;
+            white-space: nowrap;
+        }
+        button:hover { background-color: #0056b3; }
+        
+        #btnDownload {
+            background-color: #28a745;
+        }
+        #btnDownload:hover { background-color: #218838; }
+
+        /* メッシュ上の数字のスタイル（少し小さく調整） */
+        .mesh-label {
+            background: none;
+            border: none;
+        }
+        .mesh-label div {
+            background-color: rgba(255, 255, 255, 0.85);
+            border: 2px solid #e74c3c;
+            color: #c0392b;
+            font-weight: bold;
+            font-size: 12px; /* 14pxから縮小 */
+            border-radius: 50%;
+            width: 22px;  /* 28pxから縮小 */
+            height: 22px; /* 28pxから縮小 */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 1px 1px 3px rgba(0,0,0,0.3);
+            margin-left: -11px; /* widthの半分 */
+            margin-top: -11px;  /* heightの半分 */
+        }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <div class="control-group">
+            <label for="kmlFile" style="font-weight: bold; font-size: 13px;">KML読込:</label>
+            <input type="file" id="kmlFile" accept=".kml" style="font-size: 13px;">
+        </div>
+        <div class="control-group">
+            <label for="meshSize" style="font-weight: bold; font-size: 13px;">メッシュ(m):</label>
+            <input type="number" id="meshSize" value="20" min="5" max="100" step="5" style="width: 50px; padding: 3px;">
+            <button onclick="processKML()">再計算</button>
+        </div>
+        <div class="control-group">
+            <button id="btnDownload" onclick="downloadMapImageWithExif()">地図切出</button>
+        </div>
+        <div id="status" style="font-size: 13px; color: #555; margin-left: auto;">KMLファイルを選択してください。</div>
+    </div>
+
+    <div id="map"></div>
+
+    <script>
+        // ==========================================
+        // 1. 地図とレイヤーの初期化
+        // ==========================================
+        const map = L.map('map').setView([36.2048, 138.2529], 5);
+        L.control.scale({ imperial: false, metric: true, position: 'bottomleft' }).addTo(map);
+        
+        const opt = { attribution: "<a href='https://maps.gsi.go.jp/development/ichiran.html' target='_blank'>地理院タイル</a>", maxZoom: 18 };
+
+        // 背景地図の定義
+        const std = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', opt);
+        const photo = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', opt);
+
+        // デフォルトは標準地図を表示
+        std.addTo(map);
+
+        // レイヤー切り替えコントロールを右上に配置
+        const baseMaps = {
+            "標準地図 (地形図)": std,
+            "最新空中写真 (オルソ)": photo
+        };
+        L.control.layers(baseMaps, null, { collapsed: false }).addTo(map);
+
+        // ==========================================
+        // 2. 地図切出（画像エクスポート）機能
+        // ==========================================
+        const snapshotOptions = {
+            hideElementsWithSelectors: [
+                ".leaflet-control-container",
+                "#controls"
+            ],
+            mimeType: "image/jpeg"
+        };
+        const screenshoter = L.simpleMapScreenshoter(snapshotOptions).addTo(map);
+
+        function downloadMapImageWithExif() {
+            const bounds = map.getBounds();
+            const south = bounds.getSouth().toFixed(6);
+            const west = bounds.getWest().toFixed(6);
+            const north = bounds.getNorth().toFixed(6);
+            const east = bounds.getEast().toFixed(6);
+            
+            // 現在表示している背景地図の種類でファイル名を変更
+            let activeLayerName = "map";
+            map.eachLayer(function(layer){
+                if(layer === photo) activeLayerName = "ortho";
+                else if(layer === std) activeLayerName = "std";
+            });
+            
+            const filename = `mesh_${activeLayerName}_${south}_${west}_${north}_${east}.jpg`;
+
+            document.getElementById('status').innerText = "画像を出力中...";
+
+            screenshoter.takeScreen('image')
+                .then(jpegDataUrl => {
+                    // EXIFデータ（表示範囲座標）の生成と埋め込み
+                    const coordsString = `${south},${west},${north},${east}`;
+                    const zeroth = {};
+                    zeroth[piexif.ImageIFD.ImageDescription] = coordsString;
+                    
+                    const exifObj = {"0th": zeroth, "Exif": {}, "GPS": {}};
+                    const exifBytes = piexif.dump(exifObj);
+                    const newDataUrl = piexif.insert(exifBytes, jpegDataUrl);
+
+                    // ダウンロード処理
+                    const link = document.createElement('a');
+                    link.download = filename;
+                    link.href = newDataUrl;
+                    link.click();
+                    
+                    document.getElementById('status').innerText = "画像の出力が完了しました。";
+                })
+                .catch(e => {
+                    alert("画像の保存に失敗しました。\n" + e.toString());
+                    document.getElementById('status').innerText = "エラーが発生しました。";
+                });
+        }
+
+        // ==========================================
+        // 3. KML解析とメッシュ生成機能
+        // ==========================================
+        let currentGeoJsonLayer = null;
+        let loadedPoints = [];
+
+        document.getElementById('kmlFile').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                parseKML(event.target.result);
+            };
+            reader.readAsText(file);
+        });
+
+        function parseKML(kmlText) {
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(kmlText, "text/xml");
+            const coordinates = xmlDoc.getElementsByTagName("coordinates");
+            loadedPoints = [];
+
+            for (let i = 0; i < coordinates.length; i++) {
+                const coordsText = coordinates[i].textContent.trim();
+                const coordsArray = coordsText.split(/\s+/);
+                
+                coordsArray.forEach(coordStr => {
+                    const parts = coordStr.split(',');
+                    if (parts.length >= 2) {
+                        const lon = parseFloat(parts[0]);
+                        const lat = parseFloat(parts[1]);
+                        if (!isNaN(lon) && !isNaN(lat)) {
+                            loadedPoints.push(turf.point([lon, lat]));
+                        }
+                    }
+                });
+            }
+
+            if (loadedPoints.length === 0) {
+                document.getElementById('status').innerText = "エラー：有効な座標データが見つかりませんでした。";
+                return;
+            }
+            processKML();
+        }
+
+        function processKML() {
+            if (loadedPoints.length === 0) return;
+
+            if (currentGeoJsonLayer) {
+                map.removeLayer(currentGeoJsonLayer);
+            }
+
+            const meshSizeMeters = parseFloat(document.getElementById('meshSize').value);
+            const cellSizeKm = meshSizeMeters / 1000;
+
+            const pts = turf.featureCollection(loadedPoints);
+            const bbox = turf.bbox(pts);
+            // 処理を安定させるため、外枠を少しだけ拡張
+            const expandedBbox = [bbox[0]-0.0001, bbox[1]-0.0001, bbox[2]+0.0001, bbox[3]+0.0001];
+            const grid = turf.squareGrid(expandedBbox, cellSizeKm, {units: 'kilometers'});
+
+            const displayFeatures = [];
+            let validMeshCount = 0;
+
+            grid.features.forEach(cell => {
+                const ptsWithin = turf.pointsWithinPolygon(pts, cell);
+                const count = ptsWithin.features.length;
+
+                if (count > 0) {
+                    validMeshCount++;
+                    cell.properties.count = count;
+                    displayFeatures.push(cell);
+
+                    const center = turf.centerOfMass(cell);
+                    const centerCoords = center.geometry.coordinates;
+
+                    const labelMarker = turf.point(centerCoords, {
+                        isLabel: true,
+                        count: count
+                    });
+                    displayFeatures.push(labelMarker);
+                }
+            });
+
+            currentGeoJsonLayer = L.geoJSON(turf.featureCollection(displayFeatures), {
+                style: function (feature) {
+                    if (!feature.properties.isLabel) {
+                        return {
+                            color: "#e74c3c",
+                            weight: 1.5,
+                            fillColor: "#f39c12",
+                            fillOpacity: 0.15
+                        };
+                    }
+                },
+                pointToLayer: function (feature, latlng) {
+                    if (feature.properties.isLabel) {
+                        return L.marker(latlng, {
+                            icon: L.divIcon({
+                                className: 'mesh-label',
+                                html: `<div>${feature.properties.count}</div>`,
+                                iconSize: [22, 22] // アイコンサイズも同期
+                            }),
+                            interactive: false
+                        });
+                    }
+                }
+            }).addTo(map);
+
+            map.fitBounds(currentGeoJsonLayer.getBounds(), { padding: [20, 20] });
+            document.getElementById('status').innerText = `完了: ${loadedPoints.length}点 / 有効メッシュ ${validMeshCount}マス`;
+        }
+    </script>
+</body>
+</html>
